@@ -1,0 +1,249 @@
+---
+title: "WiDS exploratory data analysis"
+author: "Yihan Shi"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, comment = NA, 
+                      message = FALSE, warning = FALSE)
+```
+
+Diabetes risk factors: 
+- pregnant women over 35 years old
+- age (in general)
+- overweight (BMI >= 25)
+- family history
+- history of polycystic ovary syndrome (PCOS)
+- Injury to the pancreas 
+- Autoimmune disease
+- Physical stress (such as surgery or illness)
+- High blood pressure
+- Abnormal blood cholesterol or triglyceride levels
+- Smoking
+
+
+Variables that potentially contribute to higher possibiltiy of diabetes:
+1. BMI higher than 25 (overweight)
+2. A high ratio (4) between systolic pressure (d1_sysbp_max) over diastolic
+pressure (d1_diasbp_max)
+3. A high glucose level (d1_glucose_max/d1_glucose_min) - 11.1~33.3 mmol/L 
+
+Target variable: diabetes_mellitus
+
+https://care.diabetesjournals.org/content/31/Supplement_2/S249#:~:text=Baseline%20blood%20pressure%20data%20from,of%20%3C130%2F80%20mmHg.
+http://www.diabetesincontrol.com/diabetes-mellitus-and-infectious-diseases-controlling-chronic-hyperglycemia/#:~:text=Patients%20with%20uncontrolled%20diabetes%20are,overall%20immunity%20through%20different%20mechanisms.
+https://my.clevelandclinic.org/health/diseases/7104-diabetes-mellitus-an-overview
+
+## Load packages and data
+
+```{r packages}
+library(tidyverse)
+library(broom)
+library(class)
+library(infer)
+library(dplyr)
+library(usethis)
+training_full <- read_csv("~/Desktop/Duke 2021-22/WiDs/widsdatathon2021/TrainingWiDS2021.csv")
+unlabeled <- read_csv("~/Desktop/Duke 2021-22/WiDs/widsdatathon2021/UnlabeledWiDS2021.csv")
+```
+
+
+```{r cleaning}
+training_1 <- training_full%>% 
+  select(encounter_id, age, gender, bmi, 
+          d1_sysbp_max, d1_sysbp_min,
+          d1_diasbp_max, d1_diasbp_min,
+          d1_glucose_max, d1_glucose_min,
+          cirrhosis, immunosuppression,
+          elective_surgery,
+          diabetes_mellitus) %>% 
+  na.omit(encounter_id, age, gender, bmi, 
+          d1_sysbp_max, d1_sysbp_min,
+          d1_diasbp_max, d1_diasbp_min,
+          d1_glucose_max, d1_glucose_min,
+          cirrhosis, immunosuppression,
+          elective_surgery,
+          diabetes_mellitus)
+
+unlabeled <- unlabeled %>% 
+  na.omit(cols = "d1_sysbp_max", "d1_diasbp_max") %>% 
+  mutate(SD_pressure_ratio = d1_sysbp_max / d1_diasbp_max)
+
+training_1 <- training_1 %>% 
+  group_by(diabetes_mellitus) %>% 
+  mutate(SD_pressure_ratio = d1_sysbp_max / d1_diasbp_max,
+        glucose_avg = (d1_glucose_max + d1_glucose_min) / 2,
+        meanbmi = mean(bmi))
+```
+
+Step 1: Simple linear regression test
+
+```{r test BMI}
+ggplot(data = training_1, mapping = aes(x = bmi)) + 
+  geom_histogram() + 
+  labs(title = "Distributio of BMI")
+
+training_1 %>% 
+  group_by(diabetes_mellitus) %>% 
+  summarise(meanbmi = mean(bmi),
+            median = median(bmi),
+            IQR = IQR(bmi),
+            q1 = quantile(bmi, 0.25),
+            q3 = quantile(bmi, 0.75),
+            sd = sd(bmi))
+
+ggplot(data = training_1, mapping = aes(x = factor(diabetes_mellitus), y = bmi)) + 
+  geom_boxplot() + 
+  labs(title = "Mean BMI difference between 2 groups")
+```
+BMI is right skewed with a median of 27.8, which is higher than 25, the benchmark
+of overweight. 50% of the observations fall between 23.7 and 33.
+
+From the boxplot, there is little difference between the 2 groups. However, since
+the histogram is right skewed, we use median. For patients who have diabetes, the 
+median BMI is 30.3. For patients who do not have diabetes, the median BMI is 27.2. 
+
+```{r BMI linear model}
+bmi_model <-  lm(bmi ~ factor(diabetes_mellitus), data = training_1)
+tidy(bmi_model)
+
+glance(bmi_model) %>% 
+  pull(r.squared)
+```
+```{r}
+mean_diff <- training_1 %>%
+  count(diabetes_mellitus, meanbmi) %>%
+  select(meanbmi) %>% 
+  pull() %>%
+  diff()
+mean_diff
+```
+
+
+The intercept interprets that a patient who does not have diabetes will have a 
+BMI of 28.6. If a patient has diabetes, then the BMI will increases by 3.32.
+
+However, the r squared value is 0.028 only 2.82% of the variability in BMI can be 
+explained by diabetes indicator.
+
+Next, we include SD_pressure_ratio and glucose level in the model, respectively.
+
+```{r SD_pressure_ratio}
+BP_model <-  lm(SD_pressure_ratio ~ factor(diabetes_mellitus), data = training_1)
+tidy(BP_model)
+
+glance(BP_model) %>% 
+  pull(r.squared)
+```
+The intercept interprets that a patient who does not have diabetes will have a 
+D/S ratio of 1.7. If a patient has diabetes, then the ratio will increases by 0.08.
+
+
+```{r glucose level}
+glucose_model <-  lm(d1_glucose_max ~ factor(diabetes_mellitus), data = training_1)
+tidy(glucose_model)
+
+glance(glucose_model) %>% 
+  pull(r.squared)
+```
+(I doubt that the glucose level unit in the dataset is wrong... Need double check.
+In the codebook, the unit is mmol/L, while the actual data shoudl be in mg/dL?)
+
+The intercept interprets that a patient who does not have diabetes will have a 
+maximum glucose level of of 156.0. If a patient has diabetes, then the maximum 
+glucose level will increases by 83.
+
+16.1% of the variability in maximum glucose level can be explained by diabetes 
+indicator.
+
+
+Step 2: Logistic regression test
+
+```{r create test set}
+set.seed(0219)
+indices <- sample(nrow(training_1), 7675)
+```
+
+```{r}
+train <- training_1 %>%
+  slice(indices) %>% 
+  select(diabetes_mellitus, elective_surgery, SD_pressure_ratio, d1_glucose_max)
+
+test <- training_1 %>%
+  slice(-indices) %>% 
+  select(diabetes_mellitus, elective_surgery, SD_pressure_ratio, d1_glucose_max)
+
+train_status <- training_1 %>%
+  slice(indices) %>% 
+  pull(diabetes_mellitus)
+```
+
+```{r}
+true_status <- training_1 %>%
+  slice(-indices) %>% 
+  pull(diabetes_mellitus)
+```
+
+```{r knn}
+mod_knn <-  knn(train, test, train_status, 
+               k = 10, prob = F, use.all = F)
+mod_knn == true_status
+mean(mod_knn == true_status)
+```
+95.2% of the test data was accurately classified.
+
+```{r}
+predictions <- mod_knn
+predictions_df <- data.frame(id = 1:length(mod_knn), 
+                             prediction = predictions,
+                             stringsAsFactors = FALSE)
+write.csv(predictions_df, "predictions.csv") 
+getwd()
+```
+
+
+```{r logistic model}
+train <- training_1 %>%
+  slice(-indices) %>% 
+  select(diabetes_mellitus, bmi, SD_pressure_ratio, d1_glucose_max)
+
+train <- training_1 %>% 
+  mutate(diabetes_bin = dplyr::if_else(diabetes_mellitus == "Yes", 1, 0))
+
+logit_mod <- glm(diabetes_bin ~ factor(elective_surgery) + SD_pressure_ratio + d1_glucose_max,
+                 data = train, family = "binomial")
+
+tidy(logit_mod) %>% 
+  select(term, estimate)
+```
+
+
+```{r prediction accuracy}
+pred_log_odds <- augment(logit_mod, newdata = test) %>% 
+  pull(.fitted)
+
+pred_probs <- exp(pred_log_odds) / (1 + exp(pred_log_odds))
+round(pred_probs, 3)
+
+true_status
+
+breaks <- c(0, .5, 1)
+tags <- c(0,1)
+pred_status <- cut(pred_probs, 
+                  breaks=breaks, 
+                  include.lowest=TRUE, 
+                  right=FALSE, 
+                  labels=tags)
+pred_status
+mean(pred_status == true_status)
+```
+The accuracy of the logistic model is 77.6%.
+
+Using BMI, SD ratio, and maximum glucose level, the k-NN model has an accuracy of
+95.6%, while the logistic model has an accuracy of 77.6%. 
+
+ 
